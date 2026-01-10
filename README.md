@@ -3,7 +3,8 @@
 ![GitHub release](https://img.shields.io/github/v/release/Butter-mit-Brot/Openhome-Sync)
 ![License](https://img.shields.io/github/license/Butter-mit-Brot/Openhome-Sync)
 
-<img width="908" height="488" alt="image" src="https://github.com/user-attachments/assets/a99bfb0c-5692-4e44-9ab1-7e5467e901a7" />
+<img width="908" height="485" alt="image" src="https://github.com/user-attachments/assets/7e8869ec-db22-44e2-9116-a10c8ec1ca4c" />
+
 
 ---
 
@@ -11,7 +12,7 @@
 
 **Openhome Sync** is an application that synchronizes **Home Assistant light entities** with the **colors of your PC screen**.
 
-My goal was to create a tool similar to **Philips Hue Sync**, but fully integrated into **Home Assistant** — enabling custom Ambilight setups without the Hue ecosystem.
+My goal was to create a tool similar to **Philips Hue Sync**, but fully integrated into **Home Assistant** - enabling custom Ambilight setups without the Hue ecosystem.
 
 ---
 
@@ -68,6 +69,22 @@ Align the light icons according to their real-world position behind your monitor
 
 ---
 
+### 5️⃣ Activate Autostart (optional)
+
+<img width="545" height="95" alt="image" src="https://github.com/user-attachments/assets/7be50525-d3ac-4915-b743-fdfa33ef5053" />
+
+You have **3 Autostart options**:
+
+| Mode | Description |
+|------|-------------|
+| 🔁 **Autostart Application** | Starts Openhome Sync on System startup. |
+| ➖ **Autostart minimized** | Always Starts the Application Minimized. |
+| 💡 **Autostart Lamps** | Automaticly presses Start on Application Startup. |
+
+**DON'T FORGET TO PRESS SAVE AFTER SELECTING YOUR AUTOSTART OPTIONS**
+
+---
+
 ## 🎛 Available Modes
 
 You can choose between **3 different modes**:
@@ -85,7 +102,9 @@ If setup correctly, your lights will react instantly to your screen’s colors.
 
 ## 💾 Save & Load Configurations
 
-You can save your entire configuration and load it again after restarting the program.
+You can save your entire configuration and load it manually again after restarting the program.
+
+*Your config will be reloaded automaticly after every startup tho.*
 
 <img width="435" height="74" alt="image" src="https://github.com/user-attachments/assets/61dd7c4b-2ca8-48df-b8a0-2a43c6ed312d" />
 
