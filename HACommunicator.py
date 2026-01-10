@@ -1,5 +1,6 @@
 import pyautogui
 import requests
+from find_pixel import get_pixel
 
 
 class HACommunicator:
@@ -37,9 +38,15 @@ class HACommunicator:
         if self.BUTTON_STATUS:
             self.LAMP_STATUS.lamp_status = True
 
+            real_pos = []
+
+            for pos in position_lst:
+                real_pos.append(pos.position)
+
+            pixel_colors = get_pixel(real_pos)
+
             for entity in self.ENTITY_LST:
-                x, y = position_lst[self.ENTITY_LST.index(entity)].position
-                r, g, b = pyautogui.pixel(x, y)
+                r, g, b = pixel_colors[self.ENTITY_LST.index(entity)]
 
                 payload = {
                     "entity_id": entity,

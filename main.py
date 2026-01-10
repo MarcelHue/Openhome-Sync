@@ -1,9 +1,12 @@
+import os.path
 import sys
-import os
+import platform
 from pathlib import Path
 import random
 import webbrowser
 import json
+import platformdirs
+import win32com.client # delete this Line if you are on Linux
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -18,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QButtonGroup,
     QMessageBox,
+    QCheckBox
 )
 from PyQt6.QtCore import Qt, QPoint, QTimer
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QIcon
@@ -40,6 +44,7 @@ class MovableLamp(QWidget):
         font.setPointSize(24)
         self.icon_label.setFont(font)
 
+        self.map_position = (0, 0)
         self.position = (0, 0)
 
         self.icon_label.setStyleSheet(
@@ -103,6 +108,8 @@ class MovableLamp(QWidget):
 
     def moveEvent(self, event):
         super().moveEvent(event)
+
+        self.map_position = (event.pos().x(), event.pos().y())
 
         if self.text_label is not None:
             x = self.x() + self.width() // 2 - self.text_label.width() // 2
@@ -216,12 +223,11 @@ class LogoCanvas(QWidget):
                     x = random.randint(min_x, max_x) if max_x > min_x else min_x
                     y = random.randint(min_y, max_y) if max_y > min_y else min_y
                 else:
-                    max_x = max(0, self.width() - logo.width())
-                    max_y = max(0, self.height() - logo.height())
-                    x = random.randint(0, max_x) if max_x > 0 else 0
-                    y = random.randint(0, max_y) if max_y > 0 else 0
+                    x = 100
+                    y = 100
 
                 logo.move(x, y)
+                logo.map_position = (x, y)
                 logo.show()
                 self.logos.append(logo)
 
@@ -295,6 +301,90 @@ class ToggleButton(QPushButton):
         """
 
 
+def is_in_autostart():
+    system = platform.system()
+
+    if system == "Windows":
+        startup = os.path.join(
+            os.environ["APPDATA"],
+            r"Microsoft\Windows\Start Menu\Programs\Startup"
+        )
+        return os.path.exists(
+            os.path.join(startup, "Openhome Sync.lnk")
+        )
+
+    elif system == "Linux":
+        return os.path.exists(
+            os.path.expanduser(
+                "~/.config/autostart/Openhome Sync.desktop"
+            )
+        )
+    return False
+
+
+def add_self_to_autostart():
+    system = platform.system()
+
+    if system == "Windows":
+        startup = os.path.join(
+            os.environ["APPDATA"],
+            r"Microsoft\Windows\Start Menu\Programs\Startup"
+        )
+        shortcut_path = os.path.join(
+            startup, "Openhome Sync.lnk"
+        )
+
+        shell = win32com.client.Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortCut(shortcut_path)
+
+        shortcut.Targetpath = sys.executable
+        shortcut.Arguments = " ".join(sys.argv[1:])
+        shortcut.WorkingDirectory = os.getcwd()
+        shortcut.save()
+
+    elif system == "Linux":
+        autostart_dir = os.path.expanduser("~/.config/autostart")
+        os.makedirs(autostart_dir, exist_ok=True)
+
+        desktop_file = os.path.join(
+            autostart_dir, "Openhome Sync.desktop"
+        )
+
+        exec_cmd = f'"{sys.executable}" {" ".join(sys.argv[1:])}'
+
+        with open(desktop_file, "w") as f:
+            f.write(f"""[Desktop Entry]
+            Type=Application
+            Name=Openhome Sync
+            Exec={exec_cmd}
+            Terminal=false
+            X-GNOME-Autostart-enabled=true
+            """)
+
+
+def remove_self_from_autostart():
+    system = platform.system()
+
+    if system == "Windows":
+        startup = os.path.join(
+            os.environ["APPDATA"],
+            r"Microsoft\Windows\Start Menu\Programs\Startup"
+        )
+        shortcut_path = os.path.join(
+            startup, "Openhome Sync.lnk"
+        )
+
+        if os.path.exists(shortcut_path):
+            os.remove(shortcut_path)
+
+    elif system == "Linux":
+        desktop_file = os.path.expanduser(
+            "~/.config/autostart/Openhome Sync.desktop"
+        )
+        if os.path.exists(desktop_file):
+            os.remove(desktop_file)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -304,7 +394,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 450)
         self.setStyleSheet("background-color: #131515;")
 
-        self.base_dir = Path(os.getenv("APPDATA", Path.home())) / "OpenhomeSync"
+        self.base_dir = Path(platformdirs.user_data_dir()) / "OpenhomeSync"
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         self.save_path = self.base_dir / "save.dat"
@@ -400,6 +490,38 @@ class MainWindow(QMainWindow):
         select_group.setLayout(select_layout)
         left_layout.addWidget(select_group)
 
+        auto_start_group = QGroupBox("Autostart Selector")
+        auto_start_layout = QHBoxLayout()
+
+        self.autostart_box = QCheckBox("Autostart Application")
+        self.minimized_box = QCheckBox("Autostart minimized")
+        self.start_lamp_box = QCheckBox("Autostart Lamps")
+
+        for box in (self.autostart_box, self.minimized_box, self.start_lamp_box):
+            box.setStyleSheet(
+                """
+                QCheckBox::indicator {
+                    background: transparent;
+                    border: none;
+                    width: 0px;
+                }
+                QCheckBox {
+                    padding: 15px;
+                    font-size: 16px;
+                    border-radius: 4px;
+                    background-color: #403d39;
+                }
+                QCheckBox:checked {
+                    border: 1px solid #eb5e28;
+                    background-color: #00a67d;
+                }
+                """
+            )
+            auto_start_layout.addWidget(box)
+
+        auto_start_group.setLayout(auto_start_layout)
+        left_layout.addWidget(auto_start_group)
+
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
 
@@ -443,8 +565,21 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(left_container, 1)
         main_layout.addWidget(right_container, 1)
 
-        self.refresh_logos()
         self.timer.start()
+
+        QTimer.singleShot(0, self.after_ui)
+
+    def after_ui(self):
+        if os.path.exists(self.save_path):
+            with self.save_path.open("r", encoding="utf-8") as f:
+                js_load = json.load(f)
+                if js_load["credentials"][0] or js_load["credentials"][1] or js_load["lamps"]:
+                    self.load_click()
+
+                    lamp_count = 0
+                    for l in js_load["lamps"]:
+                        self.logo_canvas.logos[lamp_count].move(js_load["lamps"][l][0], js_load["lamps"][l][1])
+                        lamp_count += 1
 
     def update_light(self):
         HAComm = HACommunicator(self.input1.text(), self.input2.text(), self.collect_all_inputs(),
@@ -457,6 +592,15 @@ class MainWindow(QMainWindow):
         if self.mode_btn3.isChecked():
             HAComm.crazy_mode()
 
+        if self.autostart_box.isChecked():
+            if not is_in_autostart():
+                add_self_to_autostart()
+                #print("place_hold")
+        else:
+            if is_in_autostart():
+                remove_self_from_autostart()
+                #print("place_hold2")
+
     def help_click(self):
         webbrowser.open("https://github.com/Butter-mit-Brot/Openhome-Sync")
 
@@ -468,11 +612,16 @@ class MainWindow(QMainWindow):
 
         save_dialog.exec()
 
-        credentials = (self.input1.text(), self.input2.text())
+        credentials = (
+        self.input1.text(), self.input2.text(), self.autostart_box.isChecked(), self.minimized_box.isChecked(), self.start_lamp_box.isChecked())
         values = [e.text().strip() for _, e in self.dynamic_rows if e.text().strip()]
+        lamps = {}
+
+        for lamp in range(len(values)):
+            lamps[values[lamp]] = self.logo_canvas.logos[lamp].map_position
 
         with self.save_path.open("w", encoding="utf-8") as f:
-            f.write(json.dumps({"credentials": credentials, "lamps": values}, indent=4))
+            f.write(json.dumps({"credentials": credentials, "lamps": lamps}, indent=4))
 
     def load_click(self):
         try:
@@ -484,8 +633,18 @@ class MainWindow(QMainWindow):
         credentials = js_load["credentials"]
         self.input1.setText(credentials[0])
         self.input2.setText(credentials[1])
+        if bool(credentials[2]):
+            self.autostart_box.setCheckState(Qt.CheckState.Checked)
+        if bool(credentials[3]):
+            self.minimized_box.setCheckState(Qt.CheckState.Checked)
+            window.showMinimized()
+        if bool(credentials[4]):
+            self.start_lamp_box.setCheckState(Qt.CheckState.Checked)
+            self.toggle_btn.status = True
+            self.toggle_btn.setStyleSheet(self.toggle_btn.style_on())
 
         lamps = js_load["lamps"]
+
         for w, e in self.dynamic_rows:
             w.setParent(None)
             w.deleteLater()
