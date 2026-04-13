@@ -23,7 +23,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QCheckBox,
     QSystemTrayIcon,
-    QMenu
+    QMenu,
+    QSlider
 )
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QIcon, QPen, QColor, QAction
 from PyQt6.QtCore import Qt, QPoint, QTimer
@@ -513,6 +514,42 @@ class MainWindow(QMainWindow):
         self.input1.textChanged.connect(self.refresh_logos)
         self.input2.textChanged.connect(self.refresh_logos)
 
+        delay_layout = QHBoxLayout()
+        delay_label = QLabel("Update Delay:")
+        delay_label.setStyleSheet("color: #ccc; font-size: 13px;")
+        self.delay_slider = QSlider(Qt.Orientation.Horizontal)
+        self.delay_slider.setMinimum(100)
+        self.delay_slider.setMaximum(5000)
+        self.delay_slider.setSingleStep(100)
+        self.delay_slider.setValue(100)
+        self.delay_slider.setStyleSheet(
+            """
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #403d39;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #eb5e28;
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #eb5e28;
+                border-radius: 3px;
+            }
+            """
+        )
+        self.delay_value_label = QLabel("100 ms")
+        self.delay_value_label.setStyleSheet("color: #ccc; font-size: 13px;")
+        self.delay_value_label.setFixedWidth(55)
+        self.delay_slider.valueChanged.connect(self.on_delay_changed)
+        delay_layout.addWidget(delay_label)
+        delay_layout.addWidget(self.delay_slider)
+        delay_layout.addWidget(self.delay_value_label)
+        left_layout.addLayout(delay_layout)
+
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         left_layout.addWidget(line)
@@ -607,7 +644,10 @@ class MainWindow(QMainWindow):
         self.HELP = QPushButton("HELP")
         self.HELP.clicked.connect(self.help_click)
 
-        for inp in (self.SAVE, self.LOAD, self.HELP):
+        self.REFRESH = QPushButton("REFRESH")
+        self.REFRESH.clicked.connect(self.refresh_screenshot)
+
+        for inp in (self.SAVE, self.LOAD, self.HELP, self.REFRESH):
             inp.setStyleSheet(
                 """
                 QPushButton {
@@ -626,6 +666,7 @@ class MainWindow(QMainWindow):
         top_layout2.addWidget(self.SAVE)
         top_layout2.addWidget(self.LOAD)
         top_layout2.addWidget(self.HELP)
+        top_layout2.addWidget(self.REFRESH)
         right_layout.addLayout(top_layout2)
 
         self.logo_canvas = LogoCanvas()
@@ -741,6 +782,15 @@ class MainWindow(QMainWindow):
     def help_click(self):
         webbrowser.open("https://github.com/Butter-mit-Brot/Openhome-Sync")
 
+    def on_delay_changed(self, value):
+        self.timer.setInterval(value)
+        self.delay_value_label.setText(f"{value} ms")
+
+    def refresh_screenshot(self):
+        self.logo_canvas.pixmap = self.logo_canvas.capture_screenshot()
+        self.logo_canvas.resizeEvent(None)
+        self.logo_canvas.update()
+
     def save_click(self):
         save_dialog = QMessageBox()
         save_dialog.setText("Credentials and Lamps Saved Successfully!")
@@ -750,7 +800,7 @@ class MainWindow(QMainWindow):
         save_dialog.exec()
 
         credentials = (
-        self.input1.text(), self.input2.text(), self.autostart_box.isChecked(), self.minimized_box.isChecked(), self.start_lamp_box.isChecked(), self.close_to_tray_box.isChecked())
+        self.input1.text(), self.input2.text(), self.autostart_box.isChecked(), self.minimized_box.isChecked(), self.start_lamp_box.isChecked(), self.close_to_tray_box.isChecked(), self.delay_slider.value())
         values = [e.text().strip() for _, e in self.dynamic_rows if e.text().strip()]
         lamps = {}
 
@@ -789,6 +839,8 @@ class MainWindow(QMainWindow):
             self.toggle_btn.setStyleSheet(self.toggle_btn.style_on())
         if len(credentials) > 5 and bool(credentials[5]):
             self.close_to_tray_box.setCheckState(Qt.CheckState.Checked)
+        if len(credentials) > 6 and credentials[6]:
+            self.delay_slider.setValue(int(credentials[6]))
 
         if self.minimized_box.isChecked() and self.close_to_tray_box.isChecked():
             self.hide()
