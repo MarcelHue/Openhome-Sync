@@ -21,12 +21,19 @@ from PyQt6.QtWidgets import (
     QLabel,
     QButtonGroup,
     QMessageBox,
-    QCheckBox
+    QCheckBox,
+    QSystemTrayIcon,
+    QMenu
 )
+from PyQt6.QtGui import QPixmap, QPainter, QFont, QIcon, QPen, QColor, QAction
 from PyQt6.QtCore import Qt, QPoint, QTimer
-from PyQt6.QtGui import QPixmap, QPainter, QFont, QIcon, QPen, QColor
+
 
 from HACommunicator import HACommunicator
+
+def resource_path(relative_path):
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, relative_path)
 
 
 class MovableLamp(QWidget):
@@ -454,7 +461,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Openhome Sync")
-        self.setWindowIcon(QIcon("icon.ico"))
+        self.setWindowIcon(QIcon(resource_path("icon.ico")))
         self.setMinimumSize(900, 450)
         self.setStyleSheet("background-color: #131515;")
 
@@ -560,8 +567,9 @@ class MainWindow(QMainWindow):
         self.autostart_box = QCheckBox("Autostart Application")
         self.minimized_box = QCheckBox("Autostart minimized")
         self.start_lamp_box = QCheckBox("Autostart Lamps")
+        self.close_to_tray_box = QCheckBox("Close to Tray")
 
-        for box in (self.autostart_box, self.minimized_box, self.start_lamp_box):
+        for box in (self.autostart_box, self.minimized_box, self.start_lamp_box, self.close_to_tray_box):
             box.setStyleSheet(
                 """
                 QCheckBox::indicator {
@@ -629,6 +637,18 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(left_container, 1)
         main_layout.addWidget(right_container, 1)
 
+        self.tray_icon = QSystemTrayIcon(QIcon(resource_path("icon.ico")), self)
+        tray_menu = QMenu()
+        show_action = QAction("Show", self)
+        show_action.triggered.connect(self.tray_show)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.tray_quit)
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.tray_activated)
+
         self.timer.start()
 
         QTimer.singleShot(0, self.after_ui)
@@ -675,6 +695,29 @@ class MainWindow(QMainWindow):
 
                         lamp_count += 1
 
+    def closeEvent(self, event):
+        if self.close_to_tray_box.isChecked():
+            event.ignore()
+            self.hide()
+            self.tray_icon.show()
+        else:
+            self.tray_icon.hide()
+            event.accept()
+
+    def tray_show(self):
+        self.showNormal()
+        self.activateWindow()
+        self.tray_icon.hide()
+
+    def tray_quit(self):
+        self.tray_icon.hide()
+        self.close_to_tray_box.setCheckState(Qt.CheckState.Unchecked)
+        self.close()
+
+    def tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.tray_show()
+
     def update_light(self):
         HAComm = HACommunicator(self.input1.text(), self.input2.text(), self.collect_all_inputs(),
                                 self.toggle_btn.status, self)
@@ -707,7 +750,7 @@ class MainWindow(QMainWindow):
         save_dialog.exec()
 
         credentials = (
-        self.input1.text(), self.input2.text(), self.autostart_box.isChecked(), self.minimized_box.isChecked(), self.start_lamp_box.isChecked())
+        self.input1.text(), self.input2.text(), self.autostart_box.isChecked(), self.minimized_box.isChecked(), self.start_lamp_box.isChecked(), self.close_to_tray_box.isChecked())
         values = [e.text().strip() for _, e in self.dynamic_rows if e.text().strip()]
         lamps = {}
 
@@ -740,11 +783,22 @@ class MainWindow(QMainWindow):
             self.autostart_box.setCheckState(Qt.CheckState.Checked)
         if bool(credentials[3]):
             self.minimized_box.setCheckState(Qt.CheckState.Checked)
-            window.showMinimized()
         if bool(credentials[4]):
             self.start_lamp_box.setCheckState(Qt.CheckState.Checked)
             self.toggle_btn.status = True
             self.toggle_btn.setStyleSheet(self.toggle_btn.style_on())
+        if len(credentials) > 5 and bool(credentials[5]):
+            self.close_to_tray_box.setCheckState(Qt.CheckState.Checked)
+
+        if self.minimized_box.isChecked() and self.close_to_tray_box.isChecked():
+            self.hide()
+            self.tray_icon.show()
+            self._start_in_tray = True
+        elif self.minimized_box.isChecked():
+            self.showMinimized()
+            self._start_in_tray = False
+        else:
+            self._start_in_tray = False
 
         lamps = js_load["lamps"]
 
@@ -902,5 +956,6 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.show()
+    if not getattr(window, '_start_in_tray', False):
+        window.show()
     sys.exit(app.exec())
