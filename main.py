@@ -24,37 +24,24 @@ from PyQt6.QtWidgets import (
     QCheckBox
 )
 from PyQt6.QtCore import Qt, QPoint, QTimer
-from PyQt6.QtGui import QPixmap, QPainter, QFont, QIcon
+from PyQt6.QtGui import QPixmap, QPainter, QFont, QIcon, QPen, QColor
 
 from HACommunicator import HACommunicator
 
 
 class MovableLamp(QWidget):
+    CROSSHAIR_SIZE = 24
+
     def __init__(self, text, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        self.setFixedSize(30, 60)
-
-        self.icon_label = QLabel("💡", self)
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setGeometry(0, 0, 30, 60)
-
-        font = QFont()
-        font.setPointSize(24)
-        self.icon_label.setFont(font)
+        self.setFixedSize(self.CROSSHAIR_SIZE, self.CROSSHAIR_SIZE)
+        self.setStyleSheet("background-color: transparent; border: none;")
 
         self.map_position = (0, 0)
-        self.position = (0, 0)
-
-        self.icon_label.setStyleSheet(
-            """
-            QLabel {
-                background-color: transparent;
-                border: none;
-            }
-            """
-        )
+        self.position = [(0, 0)]
 
         self.text_label = QLabel(text, parent)
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -71,10 +58,32 @@ class MovableLamp(QWidget):
             """
         )
 
-        self.text_label.setGeometry(0, 60, 150, 20)
+        self.text_label.setGeometry(0, self.CROSSHAIR_SIZE, 150, 20)
         self.text_label.show()
 
         self.drag_start_pos = QPoint()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        s = self.CROSSHAIR_SIZE
+        cx, cy = s // 2, s // 2
+        r = s // 2 - 2
+
+        outline = QPen(QColor(0, 0, 0, 180), 3)
+        painter.setPen(outline)
+        painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+        painter.drawLine(cx, cy - r, cx, cy + r)
+        painter.drawLine(cx - r, cy, cx + r, cy)
+
+        cross = QPen(QColor(255, 50, 50), 1.5)
+        painter.setPen(cross)
+        painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+        painter.drawLine(cx, cy - r, cx, cy + r)
+        painter.drawLine(cx - r, cy, cx + r, cy)
+
+        painter.end()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -126,14 +135,10 @@ class MovableLamp(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             parent = self.parentWidget()
 
-            if parent is not None and hasattr(parent, "map_widget_center_to_screen"):
-                result = parent.map_widget_center_to_screen(self)
-
-                if result is not None:
-                    px, py = result
-                    # print(f'Bulb "{self.text_label.text()}" Pixel: ({px}, {py})')
-                    # pyautogui.moveTo(px, py)
-                    self.position = (px, py)
+            if parent is not None and hasattr(parent, "map_widget_area_to_screen"):
+                samples = parent.map_widget_area_to_screen(self)
+                if samples:
+                    self.position = samples
 
         super().mouseReleaseEvent(event)
 
@@ -171,10 +176,13 @@ class LogoCanvas(QWidget):
             pm = QPixmap(640, 360)
             pm.fill(Qt.GlobalColor.darkGray)
 
+        pm.setDevicePixelRatio(1.0)
         return pm
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+
+        old_image_rect = self.image_rect
 
         if self.pixmap is not None:
             self.scaled_pixmap = self.pixmap.scaled(
@@ -187,6 +195,33 @@ class LogoCanvas(QWidget):
             y = (self.height() - self.scaled_pixmap.height()) // 2
 
             self.image_rect = self.scaled_pixmap.rect().translated(x, y)
+
+        if old_image_rect is not None and self.image_rect is not None and old_image_rect.width() > 0 and old_image_rect.height() > 0:
+            for logo in self.logos:
+                cx = logo.x() + logo.width() / 2.0
+                cy = logo.y() + logo.height() / 2.0
+                rel_x = (cx - old_image_rect.left()) / float(old_image_rect.width())
+                rel_y = (cy - old_image_rect.top()) / float(old_image_rect.height())
+                rel_x = max(0.0, min(1.0, rel_x))
+                rel_y = max(0.0, min(1.0, rel_y))
+
+                new_cx = self.image_rect.left() + rel_x * self.image_rect.width()
+                new_cy = self.image_rect.top() + rel_y * self.image_rect.height()
+                new_x = int(new_cx - logo.width() / 2.0)
+                new_y = int(new_cy - logo.height() / 2.0)
+
+                min_x = self.image_rect.left()
+                max_x = self.image_rect.left() + self.image_rect.width() - logo.width()
+                min_y = self.image_rect.top()
+                max_y = self.image_rect.top() + self.image_rect.height() - logo.height()
+                new_x = max(min_x, min(new_x, max_x))
+                new_y = max(min_y, min(new_y, max_y))
+
+                logo.move(new_x, new_y)
+
+                samples = self.map_widget_area_to_screen(logo)
+                if samples:
+                    logo.position = samples
 
         self.update()
 
@@ -246,13 +281,42 @@ class LogoCanvas(QWidget):
         rel_x = max(0.0, min(1.0, rel_x))
         rel_y = max(0.0, min(1.0, rel_y))
 
-        dpr = self.pixmap.devicePixelRatio()
-        screen_w = self.pixmap.width() * dpr
-        screen_h = self.pixmap.height() * dpr
+        screen_w = self.pixmap.width()
+        screen_h = self.pixmap.height()
 
         px = int(round(rel_x * screen_w))
         py = int(round(rel_y * screen_h))
         return px, py
+
+    def map_widget_area_to_screen(self, widget, grid_size=3):
+        if self.pixmap is None or self.image_rect is None or self.scaled_pixmap is None:
+            return []
+
+        screen_w = self.pixmap.width()
+        screen_h = self.pixmap.height()
+        ir = self.image_rect
+
+        cx = widget.x() + widget.width() / 2.0
+        cy = widget.y() + widget.height() / 2.0
+        radius = widget.CROSSHAIR_SIZE / 2.0 - 2
+
+        samples = []
+        for gy in range(grid_size):
+            for gx in range(grid_size):
+                if grid_size > 1:
+                    ox = (gx / (grid_size - 1) - 0.5) * 2 * radius
+                    oy = (gy / (grid_size - 1) - 0.5) * 2 * radius
+                else:
+                    ox, oy = 0.0, 0.0
+
+                rel_x = max(0.0, min(1.0, (cx + ox - ir.left()) / float(ir.width())))
+                rel_y = max(0.0, min(1.0, (cy + oy - ir.top()) / float(ir.height())))
+
+                sx = int(round(rel_x * screen_w))
+                sy = int(round(rel_y * screen_h))
+                samples.append((sx, sy))
+
+        return samples
 
 
 class ToggleButton(QPushButton):
@@ -576,9 +640,39 @@ class MainWindow(QMainWindow):
                 if js_load["credentials"][0] or js_load["credentials"][1] or js_load["lamps"]:
                     self.load_click()
 
+                    ir = self.logo_canvas.image_rect
                     lamp_count = 0
                     for l in js_load["lamps"]:
-                        self.logo_canvas.logos[lamp_count].move(js_load["lamps"][l][0], js_load["lamps"][l][1])
+                        logo = self.logo_canvas.logos[lamp_count]
+                        saved = js_load["lamps"][l]
+
+                        if ir is not None and ir.width() > 0 and ir.height() > 0:
+                            is_relative = all(0.0 <= v <= 1.0 for v in saved)
+                            if is_relative:
+                                cx = ir.left() + saved[0] * ir.width()
+                                cy = ir.top() + saved[1] * ir.height()
+                            else:
+                                cx = saved[0] + logo.width() / 2.0
+                                cy = saved[1] + logo.height() / 2.0
+
+                            new_x = int(cx - logo.width() / 2.0)
+                            new_y = int(cy - logo.height() / 2.0)
+
+                            min_x = ir.left()
+                            max_x = ir.left() + ir.width() - logo.width()
+                            min_y = ir.top()
+                            max_y = ir.top() + ir.height() - logo.height()
+                            new_x = max(min_x, min(new_x, max_x))
+                            new_y = max(min_y, min(new_y, max_y))
+
+                            logo.move(new_x, new_y)
+                        else:
+                            logo.move(int(saved[0]), int(saved[1]))
+
+                        samples = self.logo_canvas.map_widget_area_to_screen(logo)
+                        if samples:
+                            logo.position = samples
+
                         lamp_count += 1
 
     def update_light(self):
@@ -618,7 +712,16 @@ class MainWindow(QMainWindow):
         lamps = {}
 
         for lamp in range(len(values)):
-            lamps[values[lamp]] = self.logo_canvas.logos[lamp].map_position
+            logo = self.logo_canvas.logos[lamp]
+            ir = self.logo_canvas.image_rect
+            if ir is not None and ir.width() > 0 and ir.height() > 0:
+                cx = logo.x() + logo.width() / 2.0
+                cy = logo.y() + logo.height() / 2.0
+                rel_x = max(0.0, min(1.0, (cx - ir.left()) / float(ir.width())))
+                rel_y = max(0.0, min(1.0, (cy - ir.top()) / float(ir.height())))
+                lamps[values[lamp]] = (rel_x, rel_y)
+            else:
+                lamps[values[lamp]] = (0.5, 0.5)
 
         with self.save_path.open("w", encoding="utf-8") as f:
             f.write(json.dumps({"credentials": credentials, "lamps": lamps}, indent=4))

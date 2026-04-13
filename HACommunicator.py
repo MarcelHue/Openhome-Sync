@@ -38,26 +38,42 @@ class HACommunicator:
         if self.BUTTON_STATUS:
             self.LAMP_STATUS.lamp_status = True
 
-            real_pos = []
+            all_positions = []
+            sample_counts = []
 
             for pos in position_lst:
-                real_pos.append(pos.position)
+                samples = pos.position
+                all_positions.extend(samples)
+                sample_counts.append(len(samples))
 
-            pixel_colors = get_pixel(real_pos)
+            if not all_positions:
+                return
 
-            for entity in self.ENTITY_LST:
-                r, g, b = pixel_colors[self.ENTITY_LST.index(entity)]
+            pixel_colors = get_pixel(all_positions)
+
+            idx = 0
+            for i, entity in enumerate(self.ENTITY_LST):
+                if i >= len(sample_counts):
+                    break
+                count = sample_counts[i]
+                color_samples = pixel_colors[idx:idx + count]
+                idx += count
+
+                if not color_samples:
+                    continue
+
+                avg_r = sum(c[0] for c in color_samples) // len(color_samples)
+                avg_g = sum(c[1] for c in color_samples) // len(color_samples)
+                avg_b = sum(c[2] for c in color_samples) // len(color_samples)
 
                 payload = {
                     "entity_id": entity,
-                    "rgb_color": [r, g, b],
+                    "rgb_color": [avg_r, avg_g, avg_b],
                     "brightness": 255,
                     "transition": 0.5
                 }
 
                 response = requests.post(self.turn_on_url, headers=self.headers, json=payload)
-                # print("Statuscode:", response.status_code)
-                # print("Antwort:", response.text)
 
         else:
             if self.LAMP_STATUS.lamp_status:
@@ -67,9 +83,11 @@ class HACommunicator:
         if self.BUTTON_STATUS:
             self.LAMP_STATUS.lamp_status = True
 
+            x, y = pyautogui.position()
+            pixel_colors = get_pixel([(x, y)])
+
             for entity in self.ENTITY_LST:
-                x, y = pyautogui.position()
-                r, g, b = pyautogui.pixel(x, y)
+                r, g, b = pixel_colors[0]
 
                 payload = {
                     "entity_id": entity,
@@ -79,8 +97,6 @@ class HACommunicator:
                 }
 
                 response = requests.post(self.turn_on_url, headers=self.headers, json=payload)
-                # print("Statuscode:", response.status_code)
-                # print("Antwort:", response.text)
         else:
             if self.LAMP_STATUS.lamp_status:
                 self.turn_off()
@@ -97,17 +113,14 @@ class HACommunicator:
                 (3 * width // 4, 3 * height // 4),
             ]
 
-            colors = []
-            for idx, (x, y) in enumerate(points, start=1):
-                r, g, b = pyautogui.pixel(x, y)
-                colors.append((r, g, b))
+            colors = get_pixel(points)
 
             n = len(colors)
-            avg_r = sum(c[0] for c in colors) / n
-            avg_g = sum(c[1] for c in colors) / n
-            avg_b = sum(c[2] for c in colors) / n
+            avg_r = sum(c[0] for c in colors) // n
+            avg_g = sum(c[1] for c in colors) // n
+            avg_b = sum(c[2] for c in colors) // n
 
-            avg_color = (round(avg_r), round(avg_g), round(avg_b))
+            avg_color = [avg_r, avg_g, avg_b]
             for entity in self.ENTITY_LST:
                 payload = {
                     "entity_id": entity,
@@ -117,8 +130,6 @@ class HACommunicator:
                 }
 
                 response = requests.post(self.turn_on_url, headers=self.headers, json=payload)
-                # print("Statuscode:", response.status_code)
-                # print("Antwort:", response.text)
 
         else:
             if self.LAMP_STATUS.lamp_status:
