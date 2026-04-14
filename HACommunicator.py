@@ -4,7 +4,7 @@ from find_pixel import get_pixel
 
 
 class HACommunicator:
-    def __init__(self, url, token, entity_lst, button_status, lamp_status):
+    def __init__(self, url, token, entity_lst, button_status, lamp_status, brightness=255, transition=0.5):
         self.URL = url
         self.HA_TOKEN = token
 
@@ -12,6 +12,8 @@ class HACommunicator:
 
         self.BUTTON_STATUS = button_status
         self.LAMP_STATUS = lamp_status
+        self.brightness = brightness
+        self.transition = transition
 
         self.headers = {
             "Authorization": f"Bearer {self.HA_TOKEN}",
@@ -69,8 +71,8 @@ class HACommunicator:
                 payload = {
                     "entity_id": entity,
                     "rgb_color": [avg_r, avg_g, avg_b],
-                    "brightness": 255,
-                    "transition": 0.5
+                    "brightness": self.brightness,
+                    "transition": self.transition
                 }
 
                 response = requests.post(self.turn_on_url, headers=self.headers, json=payload)
@@ -92,8 +94,8 @@ class HACommunicator:
                 payload = {
                     "entity_id": entity,
                     "rgb_color": [r, g, b],
-                    "brightness": 255,
-                    "transition": 0.2
+                    "brightness": self.brightness,
+                    "transition": self.transition
                 }
 
                 response = requests.post(self.turn_on_url, headers=self.headers, json=payload)
@@ -125,8 +127,8 @@ class HACommunicator:
                 payload = {
                     "entity_id": entity,
                     "rgb_color": avg_color,
-                    "brightness": 255,
-                    "transition": 1
+                    "brightness": self.brightness,
+                    "transition": self.transition
                 }
 
                 response = requests.post(self.turn_on_url, headers=self.headers, json=payload)

@@ -6,6 +6,7 @@ import random
 import webbrowser
 import json
 import platformdirs
+import requests
 import win32com.client # delete this Line if you are on Linux
 
 from PyQt6.QtWidgets import (
@@ -550,6 +551,82 @@ class MainWindow(QMainWindow):
         delay_layout.addWidget(self.delay_value_label)
         left_layout.addLayout(delay_layout)
 
+        slider_style = """
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #403d39;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #eb5e28;
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #eb5e28;
+                border-radius: 3px;
+            }
+        """
+
+        brightness_mult_layout = QHBoxLayout()
+        brightness_mult_label = QLabel("Brightness Multiplier:")
+        brightness_mult_label.setStyleSheet("color: #ccc; font-size: 13px;")
+        self.brightness_multiplier_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_multiplier_slider.setMinimum(0)
+        self.brightness_multiplier_slider.setMaximum(100)
+        self.brightness_multiplier_slider.setSingleStep(1)
+        self.brightness_multiplier_slider.setValue(0)
+        self.brightness_multiplier_slider.setStyleSheet(slider_style)
+        self.brightness_mult_value_label = QLabel("0%")
+        self.brightness_mult_value_label.setStyleSheet("color: #ccc; font-size: 13px;")
+        self.brightness_mult_value_label.setFixedWidth(55)
+        self.brightness_multiplier_slider.valueChanged.connect(self.on_brightness_mult_changed)
+        brightness_mult_layout.addWidget(brightness_mult_label)
+        brightness_mult_layout.addWidget(self.brightness_multiplier_slider)
+        brightness_mult_layout.addWidget(self.brightness_mult_value_label)
+        left_layout.addLayout(brightness_mult_layout)
+
+        transition_layout = QHBoxLayout()
+        transition_label = QLabel("Transition:")
+        transition_label.setStyleSheet("color: #ccc; font-size: 13px;")
+        self.transition_slider = QSlider(Qt.Orientation.Horizontal)
+        self.transition_slider.setMinimum(0)
+        self.transition_slider.setMaximum(50)
+        self.transition_slider.setSingleStep(1)
+        self.transition_slider.setValue(5)
+        self.transition_slider.setStyleSheet(slider_style)
+        self.transition_value_label = QLabel("0.5 s")
+        self.transition_value_label.setStyleSheet("color: #ccc; font-size: 13px;")
+        self.transition_value_label.setFixedWidth(55)
+        self.transition_slider.valueChanged.connect(self.on_transition_changed)
+        transition_layout.addWidget(transition_label)
+        transition_layout.addWidget(self.transition_slider)
+        transition_layout.addWidget(self.transition_value_label)
+        left_layout.addLayout(transition_layout)
+
+        brightness_layout = QHBoxLayout()
+        brightness_label = QLabel("Brightness Entity:")
+        brightness_label.setStyleSheet("color: #ccc; font-size: 13px;")
+        self.brightness_entity_input = QLineEdit()
+        self.brightness_entity_input.setPlaceholderText("z.B. light.wohnzimmer")
+        self.brightness_entity_input.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #403d39;
+                border-radius: 3px;
+            }
+
+            QLineEdit:focus {
+                border: 1px solid #eb5e28;
+                border-radius: 3px;
+            }
+            """
+        )
+        brightness_layout.addWidget(brightness_label)
+        brightness_layout.addWidget(self.brightness_entity_input)
+        left_layout.addLayout(brightness_layout)
+
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         left_layout.addWidget(line)
@@ -752,16 +829,39 @@ class MainWindow(QMainWindow):
 
     def tray_quit(self):
         self.tray_icon.hide()
-        self.close_to_tray_box.setCheckState(Qt.CheckState.Unchecked)
-        self.close()
+        self.timer.stop()
+        QApplication.instance().quit()
 
     def tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.tray_show()
 
     def update_light(self):
+        brightness = 255
+        brightness_entity = self.brightness_entity_input.text().strip()
+        if brightness_entity and self.input1.text().strip() and self.input2.text().strip():
+            try:
+                url = f"{self.input1.text().strip()}/api/states/{brightness_entity}"
+                headers = {
+                    "Authorization": f"Bearer {self.input2.text().strip()}",
+                    "Content-Type": "application/json",
+                }
+                resp = requests.get(url, headers=headers, timeout=2)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    brightness = int(data.get("attributes", {}).get("brightness", 255))
+            except Exception:
+                brightness = 255
+
+        boost = self.brightness_multiplier_slider.value()
+        if boost >= 100:
+            brightness = 255
+        elif boost > 0:
+            brightness = min(255, int(brightness * 100 / (100 - boost)))
+        transition = self.transition_slider.value() / 10.0
+
         HAComm = HACommunicator(self.input1.text(), self.input2.text(), self.collect_all_inputs(),
-                                self.toggle_btn.status, self)
+                                self.toggle_btn.status, self, brightness, transition)
 
         if self.mode_btn1.isChecked():
             HAComm.screen_mode(self.logo_canvas.logos)
@@ -786,6 +886,12 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(value)
         self.delay_value_label.setText(f"{value} ms")
 
+    def on_brightness_mult_changed(self, value):
+        self.brightness_mult_value_label.setText(f"{value}%")
+
+    def on_transition_changed(self, value):
+        self.transition_value_label.setText(f"{value / 10.0:.1f} s")
+
     def refresh_screenshot(self):
         self.logo_canvas.pixmap = self.logo_canvas.capture_screenshot()
         self.logo_canvas.resizeEvent(None)
@@ -800,7 +906,7 @@ class MainWindow(QMainWindow):
         save_dialog.exec()
 
         credentials = (
-        self.input1.text(), self.input2.text(), self.autostart_box.isChecked(), self.minimized_box.isChecked(), self.start_lamp_box.isChecked(), self.close_to_tray_box.isChecked(), self.delay_slider.value())
+        self.input1.text(), self.input2.text(), self.autostart_box.isChecked(), self.minimized_box.isChecked(), self.start_lamp_box.isChecked(), self.close_to_tray_box.isChecked(), self.delay_slider.value(), self.brightness_entity_input.text(), self.brightness_multiplier_slider.value(), self.transition_slider.value())
         values = [e.text().strip() for _, e in self.dynamic_rows if e.text().strip()]
         lamps = {}
 
@@ -841,6 +947,12 @@ class MainWindow(QMainWindow):
             self.close_to_tray_box.setCheckState(Qt.CheckState.Checked)
         if len(credentials) > 6 and credentials[6]:
             self.delay_slider.setValue(int(credentials[6]))
+        if len(credentials) > 7 and credentials[7]:
+            self.brightness_entity_input.setText(credentials[7])
+        if len(credentials) > 8 and credentials[8] is not None:
+            self.brightness_multiplier_slider.setValue(int(credentials[8]))
+        if len(credentials) > 9 and credentials[9] is not None:
+            self.transition_slider.setValue(int(credentials[9]))
 
         if self.minimized_box.isChecked() and self.close_to_tray_box.isChecked():
             self.hide()
