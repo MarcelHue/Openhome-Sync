@@ -6,7 +6,6 @@ import random
 import webbrowser
 import json
 import platformdirs
-import requests
 import win32com.client # delete this Line if you are on Linux
 
 from PyQt6.QtWidgets import (
@@ -22,16 +21,66 @@ from PyQt6.QtWidgets import (
     QLabel,
     QButtonGroup,
     QMessageBox,
-    QCheckBox,
     QSystemTrayIcon,
     QMenu,
     QSlider
 )
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QIcon, QPen, QColor, QAction
-from PyQt6.QtCore import Qt, QPoint, QTimer
-
+from PyQt6.QtCore import Qt, QPoint, QTimer, QThread, pyqtSignal, QMutex, QMutexLocker
 
 from HACommunicator import HACommunicator
+
+
+class LightWorker(QThread):
+    lamp_off = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._mutex = QMutex()
+        self._pending = None
+        self._running = True
+        self._ha_comm = None
+
+    def set_communicator(self, ha_comm):
+        self._ha_comm = ha_comm
+
+    def submit(self, task):
+        with QMutexLocker(self._mutex):
+            self._pending = task
+
+    def run(self):
+        while self._running:
+            with QMutexLocker(self._mutex):
+                task = self._pending
+                self._pending = None
+
+            if task is None or self._ha_comm is None:
+                self.msleep(5)
+                continue
+
+            ha = self._ha_comm
+            mode = task["mode"]
+            active = task["active"]
+            entity_lst = task["entity_lst"]
+            brightness = ha.fetch_brightness(task["brightness_entity"], task["brightness_boost"])
+            transition = task["transition"]
+            lamp_is_on = task["lamp_is_on"]
+
+            if active:
+                if mode == "screen":
+                    ha.screen_mode(entity_lst, task["position_data"], brightness, transition)
+                elif mode == "average":
+                    ha.average_mode(entity_lst, brightness, transition)
+                elif mode == "crazy":
+                    ha.crazy_mode(entity_lst, brightness, transition)
+            else:
+                if lamp_is_on:
+                    ha.turn_off(entity_lst)
+                    self.lamp_off.emit()
+
+    def stop(self):
+        self._running = False
+        self.wait()
 
 def resource_path(relative_path):
     base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
@@ -472,9 +521,14 @@ class MainWindow(QMainWindow):
 
         self.save_path = self.base_dir / "save.dat"
 
+        self.ha_comm = HACommunicator("", "")
+        self.light_worker = LightWorker(self)
+        self.light_worker.set_communicator(self.ha_comm)
+        self.light_worker.lamp_off.connect(self._on_lamp_off)
+        self.light_worker.start()
+
         self.timer = QTimer()
         self.timer.setInterval(100)
-
         self.timer.timeout.connect(self.update_light)
 
         self.dynamic_rows = []
@@ -678,32 +732,30 @@ class MainWindow(QMainWindow):
         auto_start_group = QGroupBox("Autostart Selector")
         auto_start_layout = QHBoxLayout()
 
-        self.autostart_box = QCheckBox("Autostart Application")
-        self.minimized_box = QCheckBox("Autostart minimized")
-        self.start_lamp_box = QCheckBox("Autostart Lamps")
-        self.close_to_tray_box = QCheckBox("Close to Tray")
+        self.autostart_box = QPushButton("Autostart Application")
+        self.minimized_box = QPushButton("Autostart minimized")
+        self.start_lamp_box = QPushButton("Autostart Lamps")
+        self.close_to_tray_box = QPushButton("Close to Tray")
 
         for box in (self.autostart_box, self.minimized_box, self.start_lamp_box, self.close_to_tray_box):
+            box.setCheckable(True)
             box.setStyleSheet(
                 """
-                QCheckBox::indicator {
-                    background: transparent;
-                    border: none;
-                    width: 0px;
-                }
-                QCheckBox {
+                QPushButton {
                     padding: 15px;
                     font-size: 16px;
                     border-radius: 4px;
                     background-color: #403d39;
                 }
-                QCheckBox:checked {
+                QPushButton:checked {
                     border: 1px solid #eb5e28;
                     background-color: #00a67d;
                 }
                 """
             )
             auto_start_layout.addWidget(box)
+
+        self.autostart_box.toggled.connect(self.on_autostart_changed)
 
         auto_start_group.setLayout(auto_start_layout)
         left_layout.addWidget(auto_start_group)
@@ -820,6 +872,8 @@ class MainWindow(QMainWindow):
             self.tray_icon.show()
         else:
             self.tray_icon.hide()
+            self.timer.stop()
+            self.light_worker.stop()
             event.accept()
 
     def tray_show(self):
@@ -830,54 +884,59 @@ class MainWindow(QMainWindow):
     def tray_quit(self):
         self.tray_icon.hide()
         self.timer.stop()
+        self.light_worker.stop()
         QApplication.instance().quit()
 
     def tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.tray_show()
 
-    def update_light(self):
-        brightness = 255
-        brightness_entity = self.brightness_entity_input.text().strip()
-        if brightness_entity and self.input1.text().strip() and self.input2.text().strip():
-            try:
-                url = f"{self.input1.text().strip()}/api/states/{brightness_entity}"
-                headers = {
-                    "Authorization": f"Bearer {self.input2.text().strip()}",
-                    "Content-Type": "application/json",
-                }
-                resp = requests.get(url, headers=headers, timeout=2)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    brightness = int(data.get("attributes", {}).get("brightness", 255))
-            except Exception:
-                brightness = 255
+    def _on_lamp_off(self):
+        self.lamp_status = False
 
-        boost = self.brightness_multiplier_slider.value()
-        if boost >= 100:
-            brightness = 255
-        elif boost > 0:
-            brightness = min(255, int(brightness * 100 / (100 - boost)))
-        transition = self.transition_slider.value() / 10.0
-
-        HAComm = HACommunicator(self.input1.text(), self.input2.text(), self.collect_all_inputs(),
-                                self.toggle_btn.status, self, brightness, transition)
-
-        if self.mode_btn1.isChecked():
-            HAComm.screen_mode(self.logo_canvas.logos)
-        if self.mode_btn2.isChecked():
-            HAComm.average_mode()
-        if self.mode_btn3.isChecked():
-            HAComm.crazy_mode()
-
-        if self.autostart_box.isChecked():
+    def on_autostart_changed(self, state):
+        if state:
             if not is_in_autostart():
                 add_self_to_autostart()
-                #print("place_hold")
         else:
             if is_in_autostart():
                 remove_self_from_autostart()
-                #print("place_hold2")
+
+    def update_light(self):
+        url = self.input1.text().strip()
+        token = self.input2.text().strip()
+        self.ha_comm.update_credentials(url, token)
+
+        entity_lst = self.collect_all_inputs()
+        active = self.toggle_btn.status
+
+        if active:
+            self.lamp_status = True
+
+        if self.mode_btn1.isChecked():
+            mode = "screen"
+        elif self.mode_btn2.isChecked():
+            mode = "average"
+        else:
+            mode = "crazy"
+
+        position_data = []
+        if mode == "screen":
+            for logo in self.logo_canvas.logos:
+                position_data.append(list(logo.position))
+
+        task = {
+            "mode": mode,
+            "active": active,
+            "entity_lst": entity_lst,
+            "brightness_entity": self.brightness_entity_input.text().strip(),
+            "brightness_boost": self.brightness_multiplier_slider.value(),
+            "transition": self.transition_slider.value() / 10.0,
+            "lamp_is_on": bool(self.lamp_status),
+            "position_data": position_data,
+        }
+
+        self.light_worker.submit(task)
 
     def help_click(self):
         webbrowser.open("https://github.com/Butter-mit-Brot/Openhome-Sync")
@@ -936,15 +995,15 @@ class MainWindow(QMainWindow):
         self.input1.setText(credentials[0])
         self.input2.setText(credentials[1])
         if bool(credentials[2]):
-            self.autostart_box.setCheckState(Qt.CheckState.Checked)
+            self.autostart_box.setChecked(True)
         if bool(credentials[3]):
-            self.minimized_box.setCheckState(Qt.CheckState.Checked)
+            self.minimized_box.setChecked(True)
         if bool(credentials[4]):
-            self.start_lamp_box.setCheckState(Qt.CheckState.Checked)
+            self.start_lamp_box.setChecked(True)
             self.toggle_btn.status = True
             self.toggle_btn.setStyleSheet(self.toggle_btn.style_on())
         if len(credentials) > 5 and bool(credentials[5]):
-            self.close_to_tray_box.setCheckState(Qt.CheckState.Checked)
+            self.close_to_tray_box.setChecked(True)
         if len(credentials) > 6 and credentials[6]:
             self.delay_slider.setValue(int(credentials[6]))
         if len(credentials) > 7 and credentials[7]:

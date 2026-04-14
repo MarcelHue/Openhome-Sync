@@ -1,138 +1,157 @@
+import time
 import pyautogui
 import requests
 from find_pixel import get_pixel
 
+COLOR_TOLERANCE = 5
+BRIGHTNESS_POLL_INTERVAL = 3.0
+
 
 class HACommunicator:
-    def __init__(self, url, token, entity_lst, button_status, lamp_status, brightness=255, transition=0.5):
+    def __init__(self, url, token):
         self.URL = url
         self.HA_TOKEN = token
 
-        self.ENTITY_LST = entity_lst
-
-        self.BUTTON_STATUS = button_status
-        self.LAMP_STATUS = lamp_status
-        self.brightness = brightness
-        self.transition = transition
-
-        self.headers = {
+        self.session = requests.Session()
+        self.session.headers.update({
             "Authorization": f"Bearer {self.HA_TOKEN}",
             "Content-Type": "application/json",
-        }
+        })
 
         self.turn_on_url = f"{self.URL}/api/services/light/turn_on"
         self.turn_off_url = f"{self.URL}/api/services/light/turn_off"
 
-    def turn_off(self):
-        if self.URL and self.HA_TOKEN and self.ENTITY_LST:
+        self._last_colors = {}
+        self._last_brightness = 255
+        self._last_brightness_time = 0.0
+
+    def update_credentials(self, url, token):
+        if url != self.URL or token != self.HA_TOKEN:
+            self.URL = url
+            self.HA_TOKEN = token
+            self.session.headers["Authorization"] = f"Bearer {self.HA_TOKEN}"
+            self.turn_on_url = f"{self.URL}/api/services/light/turn_on"
+            self.turn_off_url = f"{self.URL}/api/services/light/turn_off"
+            self._last_colors.clear()
+
+    def _color_changed(self, entity, r, g, b, brightness):
+        prev = self._last_colors.get(entity)
+        if prev is None:
+            return True
+        pr, pg, pb, pbr = prev
+        return (abs(r - pr) > COLOR_TOLERANCE or
+                abs(g - pg) > COLOR_TOLERANCE or
+                abs(b - pb) > COLOR_TOLERANCE or
+                pbr != brightness)
+
+    def _store_color(self, entity, r, g, b, brightness):
+        self._last_colors[entity] = (r, g, b, brightness)
+
+    def fetch_brightness(self, brightness_entity, boost):
+        now = time.monotonic()
+        if now - self._last_brightness_time >= BRIGHTNESS_POLL_INTERVAL:
+            if brightness_entity and self.URL and self.HA_TOKEN:
+                try:
+                    url = f"{self.URL}/api/states/{brightness_entity}"
+                    resp = self.session.get(url, timeout=2)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        self._last_brightness = int(
+                            data.get("attributes", {}).get("brightness", 255)
+                        )
+                except Exception:
+                    pass
+            self._last_brightness_time = now
+
+        brightness = self._last_brightness
+        if boost >= 100:
+            brightness = 255
+        elif boost > 0:
+            brightness = min(255, int(brightness * 100 / (100 - boost)))
+
+        return brightness
+
+    def turn_off(self, entity_lst):
+        if self.URL and self.HA_TOKEN and entity_lst:
+            payload = {"entity_id": entity_lst}
+            try:
+                self.session.post(self.turn_off_url, json=payload, timeout=2)
+            except Exception:
+                pass
+            self._last_colors.clear()
+
+    def send_colors(self, entity_color_map, brightness, transition):
+        for entity, (r, g, b) in entity_color_map.items():
+            if not self._color_changed(entity, r, g, b, brightness):
+                continue
             payload = {
-                "entity_id": self.ENTITY_LST,
+                "entity_id": entity,
+                "rgb_color": [r, g, b],
+                "brightness": brightness,
+                "transition": transition,
             }
+            try:
+                self.session.post(self.turn_on_url, json=payload, timeout=2)
+            except Exception:
+                pass
+            self._store_color(entity, r, g, b, brightness)
 
-            response = requests.post(self.turn_off_url, headers=self.headers, json=payload)
+    def screen_mode(self, entity_lst, position_data, brightness, transition):
+        all_positions = []
+        sample_counts = []
 
-            # print("Statuscode:", response.status_code)
-            # print("Response:", response.text)
-            if response.text == "[]":
-                self.LAMP_STATUS.lamp_status = False
+        for samples in position_data:
+            all_positions.extend(samples)
+            sample_counts.append(len(samples))
 
-    def screen_mode(self, position_lst):
-        if self.BUTTON_STATUS:
-            self.LAMP_STATUS.lamp_status = True
+        if not all_positions:
+            return
 
-            all_positions = []
-            sample_counts = []
+        pixel_colors = get_pixel(all_positions)
 
-            for pos in position_lst:
-                samples = pos.position
-                all_positions.extend(samples)
-                sample_counts.append(len(samples))
+        entity_color_map = {}
+        idx = 0
+        for i, entity in enumerate(entity_lst):
+            if i >= len(sample_counts):
+                break
+            count = sample_counts[i]
+            color_samples = pixel_colors[idx:idx + count]
+            idx += count
 
-            if not all_positions:
-                return
+            if not color_samples:
+                continue
 
-            pixel_colors = get_pixel(all_positions)
+            avg_r = sum(c[0] for c in color_samples) // len(color_samples)
+            avg_g = sum(c[1] for c in color_samples) // len(color_samples)
+            avg_b = sum(c[2] for c in color_samples) // len(color_samples)
+            entity_color_map[entity] = (avg_r, avg_g, avg_b)
 
-            idx = 0
-            for i, entity in enumerate(self.ENTITY_LST):
-                if i >= len(sample_counts):
-                    break
-                count = sample_counts[i]
-                color_samples = pixel_colors[idx:idx + count]
-                idx += count
+        self.send_colors(entity_color_map, brightness, transition)
 
-                if not color_samples:
-                    continue
+    def crazy_mode(self, entity_lst, brightness, transition):
+        x, y = pyautogui.position()
+        pixel_colors = get_pixel([(x, y)])
+        r, g, b = pixel_colors[0]
 
-                avg_r = sum(c[0] for c in color_samples) // len(color_samples)
-                avg_g = sum(c[1] for c in color_samples) // len(color_samples)
-                avg_b = sum(c[2] for c in color_samples) // len(color_samples)
+        entity_color_map = {entity: (r, g, b) for entity in entity_lst}
+        self.send_colors(entity_color_map, brightness, transition)
 
-                payload = {
-                    "entity_id": entity,
-                    "rgb_color": [avg_r, avg_g, avg_b],
-                    "brightness": self.brightness,
-                    "transition": self.transition
-                }
+    def average_mode(self, entity_lst, brightness, transition):
+        width, height = pyautogui.size()
 
-                response = requests.post(self.turn_on_url, headers=self.headers, json=payload)
+        points = [
+            (width // 4, height // 4),
+            (3 * width // 4, height // 4),
+            (width // 4, 3 * height // 4),
+            (3 * width // 4, 3 * height // 4),
+        ]
 
-        else:
-            if self.LAMP_STATUS.lamp_status:
-                self.turn_off()
+        colors = get_pixel(points)
 
-    def crazy_mode(self):
-        if self.BUTTON_STATUS:
-            self.LAMP_STATUS.lamp_status = True
+        n = len(colors)
+        avg_r = sum(c[0] for c in colors) // n
+        avg_g = sum(c[1] for c in colors) // n
+        avg_b = sum(c[2] for c in colors) // n
 
-            x, y = pyautogui.position()
-            pixel_colors = get_pixel([(x, y)])
-
-            for entity in self.ENTITY_LST:
-                r, g, b = pixel_colors[0]
-
-                payload = {
-                    "entity_id": entity,
-                    "rgb_color": [r, g, b],
-                    "brightness": self.brightness,
-                    "transition": self.transition
-                }
-
-                response = requests.post(self.turn_on_url, headers=self.headers, json=payload)
-        else:
-            if self.LAMP_STATUS.lamp_status:
-                self.turn_off()
-
-    def average_mode(self):
-        if self.BUTTON_STATUS:
-            self.LAMP_STATUS.lamp_status = True
-            width, height = pyautogui.size()
-
-            points = [
-                (width // 4, height // 4),
-                (3 * width // 4, height // 4),
-                (width // 4, 3 * height // 4),
-                (3 * width // 4, 3 * height // 4),
-            ]
-
-            colors = get_pixel(points)
-
-            n = len(colors)
-            avg_r = sum(c[0] for c in colors) // n
-            avg_g = sum(c[1] for c in colors) // n
-            avg_b = sum(c[2] for c in colors) // n
-
-            avg_color = [avg_r, avg_g, avg_b]
-            for entity in self.ENTITY_LST:
-                payload = {
-                    "entity_id": entity,
-                    "rgb_color": avg_color,
-                    "brightness": self.brightness,
-                    "transition": self.transition
-                }
-
-                response = requests.post(self.turn_on_url, headers=self.headers, json=payload)
-
-        else:
-            if self.LAMP_STATUS.lamp_status:
-                self.turn_off()
+        entity_color_map = {entity: (avg_r, avg_g, avg_b) for entity in entity_lst}
+        self.send_colors(entity_color_map, brightness, transition)
