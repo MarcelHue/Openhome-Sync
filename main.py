@@ -23,10 +23,15 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QSystemTrayIcon,
     QMenu,
-    QSlider
+    QSlider,
+    QScrollArea,
+    QInputDialog
 )
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QIcon, QPen, QColor, QAction
-from PyQt6.QtCore import Qt, QPoint, QTimer, QThread, pyqtSignal, QMutex, QMutexLocker
+from PyQt6.QtCore import (
+    Qt, QPoint, QTimer, QThread, pyqtSignal, QMutex, QMutexLocker,
+    QPropertyAnimation, QEasingCurve
+)
 
 from HACommunicator import HACommunicator
 
@@ -507,6 +512,194 @@ def remove_self_from_autostart():
             os.remove(desktop_file)
 
 
+class ProfileSidebar(QWidget):
+    profile_selected = pyqtSignal(str)
+    profile_deleted = pyqtSignal(str)
+    profile_renamed = pyqtSignal(str, str)
+    profile_created = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(0)
+        self.setObjectName("profileSidebar")
+        self.setStyleSheet(
+            "#profileSidebar { background-color: #1E1E1E; border-right: 1px solid #3A3A3A; }"
+        )
+
+        self._active_profile = "Default"
+        self._profile_names = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        header = QLabel("Profile")
+        header.setStyleSheet(
+            "color: #F5F5F5; font-size: 18px; font-weight: bold;"
+            "background: transparent; border: none;"
+        )
+        layout.addWidget(header)
+
+        new_btn = QPushButton("+ Neues Profil")
+        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #2A2A2A;
+                color: #F5F5F5;
+                border: 1px solid #3A3A3A;
+                border-radius: 4px;
+                padding: 8px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #333333;
+                border: 1px solid #eb5e28;
+            }
+            """
+        )
+        new_btn.clicked.connect(self._on_new_profile)
+        layout.addWidget(new_btn)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            """
+            QScrollArea { border: none; background: transparent; }
+            QWidget#listContainer { background: transparent; }
+            QScrollBar:vertical {
+                background: #1E1E1E; width: 8px; border: none;
+            }
+            QScrollBar::handle:vertical {
+                background: #3A3A3A; border-radius: 4px; min-height: 20px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            """
+        )
+
+        self._list_container = QWidget()
+        self._list_container.setObjectName("listContainer")
+        self._list_layout = QVBoxLayout(self._list_container)
+        self._list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._list_layout.setContentsMargins(0, 5, 0, 5)
+        self._list_layout.setSpacing(4)
+
+        scroll.setWidget(self._list_container)
+        layout.addWidget(scroll)
+
+    def set_active(self, name):
+        self._active_profile = name
+        self._rebuild_items()
+
+    def refresh_list(self, profile_names):
+        self._profile_names = list(profile_names)
+        self._rebuild_items()
+
+    def _rebuild_items(self):
+        while self._list_layout.count():
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for name in self._profile_names:
+            item = self._create_profile_item(name)
+            self._list_layout.addWidget(item)
+
+    def _create_profile_item(self, name):
+        is_active = (name == self._active_profile)
+
+        item = QWidget()
+        bg = "#3D3D3D" if is_active else "#2A2A2A"
+        item.setStyleSheet(
+            f"QWidget {{ background-color: {bg}; border-radius: 4px; }}"
+        )
+
+        h = QHBoxLayout(item)
+        h.setContentsMargins(8, 6, 4, 6)
+
+        label = QPushButton(name)
+        label.setCursor(Qt.CursorShape.PointingHandCursor)
+        fg = "#F5F5F5" if is_active else "#B0B0B0"
+        label.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: transparent; color: {fg};
+                font-size: 13px; text-align: left;
+                border: none; padding: 2px;
+            }}
+            QPushButton:hover {{ color: #F5F5F5; }}
+            """
+        )
+        label.clicked.connect(lambda _=False, n=name: self.profile_selected.emit(n))
+
+        rename_btn = QPushButton("\u270E")
+        rename_btn.setToolTip("Umbenennen")
+        rename_btn.setFixedSize(24, 24)
+        rename_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        rename_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent; color: #707070;
+                border: none; font-size: 13px;
+            }
+            QPushButton:hover { color: #F5F5F5; }
+            """
+        )
+        rename_btn.clicked.connect(lambda _=False, n=name: self._on_rename(n))
+
+        delete_btn = QPushButton("\u2715")
+        delete_btn.setToolTip("Loeschen")
+        delete_btn.setFixedSize(24, 24)
+        delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent; color: #707070;
+                border: none; font-size: 13px; font-weight: bold;
+            }
+            QPushButton:hover { color: #eb5e28; }
+            """
+        )
+        delete_btn.clicked.connect(lambda _=False, n=name: self._on_delete(n))
+
+        h.addWidget(label, 1)
+        h.addWidget(rename_btn)
+        h.addWidget(delete_btn)
+
+        return item
+
+    def _on_new_profile(self):
+        name, ok = QInputDialog.getText(self, "Neues Profil", "Profilname:")
+        if ok and name.strip():
+            self.profile_created.emit(name.strip())
+
+    def _on_rename(self, old_name):
+        new_name, ok = QInputDialog.getText(
+            self, "Profil umbenennen", "Neuer Name:", text=old_name
+        )
+        if ok and new_name.strip() and new_name.strip() != old_name:
+            self.profile_renamed.emit(old_name, new_name.strip())
+
+    def _on_delete(self, name):
+        if name == self._active_profile and len(self._profile_names) <= 1:
+            QMessageBox.warning(
+                self, "Kann nicht loeschen",
+                "Das letzte Profil kann nicht geloescht werden."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self, "Profil loeschen",
+            f'Profil "{name}" wirklich loeschen?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.profile_deleted.emit(name)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -519,7 +712,9 @@ class MainWindow(QMainWindow):
         self.base_dir = Path(platformdirs.user_data_dir()) / "OpenhomeSync"
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        self.save_path = self.base_dir / "save.dat"
+        self._old_save_path = self.base_dir / "save.dat"
+        self.profiles_path = self.base_dir / "profiles.json"
+        self._active_profile = "Default"
 
         self.ha_comm = HACommunicator("", "")
         self.light_worker = LightWorker(self)
@@ -538,10 +733,38 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
+        self.sidebar = ProfileSidebar()
+        self.sidebar.profile_selected.connect(self.switch_profile)
+        self.sidebar.profile_created.connect(self.create_profile)
+        self.sidebar.profile_deleted.connect(self.delete_profile)
+        self.sidebar.profile_renamed.connect(self.rename_profile)
+        main_layout.addWidget(self.sidebar)
+
         left_container = QWidget()
         left_layout = QVBoxLayout(left_container)
 
         top_layout = QHBoxLayout()
+
+        self.hamburger_btn = QPushButton("\u2630")
+        self.hamburger_btn.setFixedSize(36, 36)
+        self.hamburger_btn.setFont(QFont("", 18))
+        self.hamburger_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hamburger_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #1E1E1E;
+                color: #ccc;
+                border: 1px solid #3A3A3A;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                border: 1px solid #eb5e28;
+                color: #F5F5F5;
+            }
+            """
+        )
+        self.hamburger_btn.clicked.connect(self.toggle_sidebar)
+        top_layout.addWidget(self.hamburger_btn)
 
         self.input1 = QLineEdit()
         self.input1.setPlaceholderText("https://your.ip.or.domain:8123")
@@ -824,46 +1047,31 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.after_ui)
 
     def after_ui(self):
-        if os.path.exists(self.save_path):
-            with self.save_path.open("r", encoding="utf-8") as f:
-                js_load = json.load(f)
-                if js_load["credentials"][0] or js_load["credentials"][1] or js_load["lamps"]:
-                    self.load_click()
+        self._migrate_old_save()
 
-                    ir = self.logo_canvas.image_rect
-                    lamp_count = 0
-                    for l in js_load["lamps"]:
-                        logo = self.logo_canvas.logos[lamp_count]
-                        saved = js_load["lamps"][l]
+        profiles_data = self._load_profiles_json()
+        self._active_profile = profiles_data.get("active_profile", "Default")
 
-                        if ir is not None and ir.width() > 0 and ir.height() > 0:
-                            is_relative = all(0.0 <= v <= 1.0 for v in saved)
-                            if is_relative:
-                                cx = ir.left() + saved[0] * ir.width()
-                                cy = ir.top() + saved[1] * ir.height()
-                            else:
-                                cx = saved[0] + logo.width() / 2.0
-                                cy = saved[1] + logo.height() / 2.0
+        profile_names = list(profiles_data.get("profiles", {}).keys())
+        if not profile_names:
+            profiles_data["profiles"] = {"Default": {"credentials": [], "lamps": {}}}
+            profile_names = ["Default"]
+            self._save_profiles_json(profiles_data)
 
-                            new_x = int(cx - logo.width() / 2.0)
-                            new_y = int(cy - logo.height() / 2.0)
+        if self._active_profile not in profiles_data["profiles"]:
+            self._active_profile = profile_names[0]
 
-                            min_x = ir.left()
-                            max_x = ir.left() + ir.width() - logo.width()
-                            min_y = ir.top()
-                            max_y = ir.top() + ir.height() - logo.height()
-                            new_x = max(min_x, min(new_x, max_x))
-                            new_y = max(min_y, min(new_y, max_y))
+        self.sidebar.refresh_list(profile_names)
+        self.sidebar.set_active(self._active_profile)
 
-                            logo.move(new_x, new_y)
-                        else:
-                            logo.move(int(saved[0]), int(saved[1]))
+        data = profiles_data["profiles"][self._active_profile]
+        has_data = (
+            data.get("credentials") or data.get("lamps")
+        )
+        if has_data:
+            self._apply_profile_data(data, handle_startup=True)
 
-                        samples = self.logo_canvas.map_widget_area_to_screen(logo)
-                        if samples:
-                            logo.position = samples
-
-                        lamp_count += 1
+        self.setWindowTitle(f"Openhome Sync - {self._active_profile}")
 
     def closeEvent(self, event):
         if self.close_to_tray_box.isChecked():
@@ -957,136 +1165,23 @@ class MainWindow(QMainWindow):
         self.logo_canvas.update()
 
     def save_click(self):
+        profiles_data = self._load_profiles_json()
+        profiles_data["profiles"][self._active_profile] = self._gather_current_profile_data()
+        profiles_data["active_profile"] = self._active_profile
+        self._save_profiles_json(profiles_data)
+
         save_dialog = QMessageBox()
         save_dialog.setText("Credentials and Lamps Saved Successfully!")
         save_dialog.setWindowTitle("Saved Successfully!")
         save_dialog.setIcon(QMessageBox.Icon.Information)
-
         save_dialog.exec()
 
-        credentials = (
-        self.input1.text(), self.input2.text(), self.autostart_box.isChecked(), self.minimized_box.isChecked(), self.start_lamp_box.isChecked(), self.close_to_tray_box.isChecked(), self.delay_slider.value(), self.brightness_entity_input.text(), self.brightness_multiplier_slider.value(), self.transition_slider.value())
-        values = [e.text().strip() for _, e in self.dynamic_rows if e.text().strip()]
-        lamps = {}
-
-        for lamp in range(len(values)):
-            logo = self.logo_canvas.logos[lamp]
-            ir = self.logo_canvas.image_rect
-            if ir is not None and ir.width() > 0 and ir.height() > 0:
-                cx = logo.x() + logo.width() / 2.0
-                cy = logo.y() + logo.height() / 2.0
-                rel_x = max(0.0, min(1.0, (cx - ir.left()) / float(ir.width())))
-                rel_y = max(0.0, min(1.0, (cy - ir.top()) / float(ir.height())))
-                lamps[values[lamp]] = (rel_x, rel_y)
-            else:
-                lamps[values[lamp]] = (0.5, 0.5)
-
-        with self.save_path.open("w", encoding="utf-8") as f:
-            f.write(json.dumps({"credentials": credentials, "lamps": lamps}, indent=4))
-
     def load_click(self):
-        try:
-            with self.save_path.open("r", encoding="utf-8") as f:
-                js_load = json.load(f)
-        except FileNotFoundError:
+        profiles_data = self._load_profiles_json()
+        if self._active_profile not in profiles_data.get("profiles", {}):
             return
-
-        credentials = js_load["credentials"]
-        self.input1.setText(credentials[0])
-        self.input2.setText(credentials[1])
-        if bool(credentials[2]):
-            self.autostart_box.setChecked(True)
-        if bool(credentials[3]):
-            self.minimized_box.setChecked(True)
-        if bool(credentials[4]):
-            self.start_lamp_box.setChecked(True)
-            self.toggle_btn.status = True
-            self.toggle_btn.setStyleSheet(self.toggle_btn.style_on())
-        if len(credentials) > 5 and bool(credentials[5]):
-            self.close_to_tray_box.setChecked(True)
-        if len(credentials) > 6 and credentials[6]:
-            self.delay_slider.setValue(int(credentials[6]))
-        if len(credentials) > 7 and credentials[7]:
-            self.brightness_entity_input.setText(credentials[7])
-        if len(credentials) > 8 and credentials[8] is not None:
-            self.brightness_multiplier_slider.setValue(int(credentials[8]))
-        if len(credentials) > 9 and credentials[9] is not None:
-            self.transition_slider.setValue(int(credentials[9]))
-
-        if self.minimized_box.isChecked() and self.close_to_tray_box.isChecked():
-            self.hide()
-            self.tray_icon.show()
-            self._start_in_tray = True
-        elif self.minimized_box.isChecked():
-            self.showMinimized()
-            self._start_in_tray = False
-        else:
-            self._start_in_tray = False
-
-        lamps = js_load["lamps"]
-
-        for w, e in self.dynamic_rows:
-            w.setParent(None)
-            w.deleteLater()
-        self.dynamic_rows.clear()
-
-        for text in lamps:
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-
-            line_edit = QLineEdit()
-            line_edit.setPlaceholderText("Your device ID...")
-            line_edit.setText(text)
-            line_edit.textChanged.connect(self.refresh_logos)
-            line_edit.setStyleSheet(
-                """
-                QLineEdit {
-                    background-color: #403d39;
-                    border-radius: 3px;
-                }
-
-                QLineEdit:focus {
-                    border: 1px solid #eb5e28;
-                    border-radius: 3px;
-                }
-                """
-            )
-
-            plus_button = QPushButton("+")
-            plus_button.setFixedWidth(30)
-            plus_button.clicked.connect(self.add_dynamic_row)
-
-            delete_button = QPushButton("–")
-            delete_button.setFixedWidth(30)
-            delete_button.clicked.connect(
-                lambda checked=False, w=row_widget, e=line_edit: self.delete_dynamic_row(w, e)
-            )
-
-            for btn in (plus_button, delete_button):
-                btn.setStyleSheet(
-                    """
-                    QPushButton {
-                        background-color: #403d39;
-                    }
-                    QPushButton:hover {
-                        border: 0.5px solid #eb5e28;
-                        border-radius: 7px;
-                        background-color: #252422;
-                    }
-                    """
-                )
-
-            row_layout.addWidget(line_edit)
-            row_layout.addWidget(plus_button)
-            row_layout.addWidget(delete_button)
-
-            self.dynamic_layout.addWidget(row_widget)
-            self.dynamic_rows.append((row_widget, line_edit))
-
-        if not lamps:
-            self.add_dynamic_row()
-
-        self.refresh_logos()
+        data = profiles_data["profiles"][self._active_profile]
+        self._apply_profile_data(data)
 
     def clear_all_dynamic_rows(self):
         for row_widget, line_edit in self.dynamic_rows:
@@ -1097,56 +1192,7 @@ class MainWindow(QMainWindow):
         self.refresh_logos()
 
     def add_dynamic_row(self):
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-
-        line_edit = QLineEdit()
-        line_edit.setPlaceholderText("Your device ID...")
-        line_edit.textChanged.connect(self.refresh_logos)
-        line_edit.setStyleSheet(
-            """
-            QLineEdit {
-                background-color: #403d39;
-                border-radius: 3px;
-            }
-
-            QLineEdit:focus {
-                border: 1px solid #eb5e28;
-                border-radius: 3px;
-            }
-            """
-        )
-
-        plus_button = QPushButton("+")
-        plus_button.setFixedWidth(30)
-        plus_button.clicked.connect(self.add_dynamic_row)
-
-        delete_button = QPushButton("–")
-        delete_button.setFixedWidth(30)
-        delete_button.clicked.connect(
-            lambda checked=False, w=row_widget, e=line_edit: self.delete_dynamic_row(w, e)
-        )
-
-        for btn in (plus_button, delete_button):
-            btn.setStyleSheet(
-                """
-                QPushButton {
-                    background-color: #403d39;
-                }
-                QPushButton:hover {
-                    border: 0.5px solid #eb5e28;
-                    border-radius: 7px;
-                    background-color: #252422;
-                }
-                """
-            )
-
-        row_layout.addWidget(line_edit)
-        row_layout.addWidget(plus_button)
-        row_layout.addWidget(delete_button)
-
-        self.dynamic_layout.addWidget(row_widget)
-        self.dynamic_rows.append((row_widget, line_edit))
+        self._create_lamp_row()
         self.refresh_logos()
 
     def delete_dynamic_row(self, row_widget, line_edit):
@@ -1174,6 +1220,333 @@ class MainWindow(QMainWindow):
             return
         values = self.collect_all_inputs()
         self.logo_canvas.set_logos(values)
+
+    # ── Profile helpers ──────────────────────────────────────────
+
+    def _load_profiles_json(self):
+        if self.profiles_path.exists():
+            try:
+                with self.profiles_path.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, KeyError):
+                pass
+        return {
+            "active_profile": "Default",
+            "profiles": {"Default": {"credentials": [], "lamps": {}}}
+        }
+
+    def _save_profiles_json(self, data):
+        with self.profiles_path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+
+    def _migrate_old_save(self):
+        if self._old_save_path.exists() and not self.profiles_path.exists():
+            try:
+                with self._old_save_path.open("r", encoding="utf-8") as f:
+                    old_data = json.load(f)
+                profiles_data = {
+                    "active_profile": "Default",
+                    "profiles": {
+                        "Default": {
+                            "credentials": list(old_data.get("credentials", [])),
+                            "lamps": old_data.get("lamps", {})
+                        }
+                    }
+                }
+                self._save_profiles_json(profiles_data)
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    def _gather_current_profile_data(self):
+        credentials = [
+            self.input1.text(), self.input2.text(),
+            self.autostart_box.isChecked(), self.minimized_box.isChecked(),
+            self.start_lamp_box.isChecked(), self.close_to_tray_box.isChecked(),
+            self.delay_slider.value(), self.brightness_entity_input.text(),
+            self.brightness_multiplier_slider.value(),
+            self.transition_slider.value()
+        ]
+        values = [e.text().strip() for _, e in self.dynamic_rows if e.text().strip()]
+        lamps = {}
+        for i in range(len(values)):
+            if i >= len(self.logo_canvas.logos):
+                break
+            logo = self.logo_canvas.logos[i]
+            ir = self.logo_canvas.image_rect
+            if ir is not None and ir.width() > 0 and ir.height() > 0:
+                cx = logo.x() + logo.width() / 2.0
+                cy = logo.y() + logo.height() / 2.0
+                rel_x = max(0.0, min(1.0, (cx - ir.left()) / float(ir.width())))
+                rel_y = max(0.0, min(1.0, (cy - ir.top()) / float(ir.height())))
+                lamps[values[i]] = [rel_x, rel_y]
+            else:
+                lamps[values[i]] = [0.5, 0.5]
+        return {"credentials": credentials, "lamps": lamps}
+
+    def _apply_profile_data(self, data, handle_startup=False):
+        credentials = data.get("credentials", [])
+        lamps = data.get("lamps", {})
+
+        if len(credentials) > 0:
+            self.input1.setText(credentials[0])
+        else:
+            self.input1.clear()
+        if len(credentials) > 1:
+            self.input2.setText(credentials[1])
+        else:
+            self.input2.clear()
+
+        self.autostart_box.setChecked(bool(credentials[2]) if len(credentials) > 2 else False)
+        self.minimized_box.setChecked(bool(credentials[3]) if len(credentials) > 3 else False)
+
+        if len(credentials) > 4 and bool(credentials[4]):
+            self.start_lamp_box.setChecked(True)
+            self.toggle_btn.setChecked(True)
+            self.toggle_btn.status = True
+            self.toggle_btn.setStyleSheet(self.toggle_btn.style_on())
+        else:
+            self.start_lamp_box.setChecked(False)
+            self.toggle_btn.setChecked(False)
+            self.toggle_btn.status = False
+            self.toggle_btn.setStyleSheet(self.toggle_btn.style_off())
+
+        self.close_to_tray_box.setChecked(
+            bool(credentials[5]) if len(credentials) > 5 else False
+        )
+
+        if len(credentials) > 6 and credentials[6]:
+            self.delay_slider.setValue(int(credentials[6]))
+        else:
+            self.delay_slider.setValue(100)
+
+        if len(credentials) > 7 and credentials[7]:
+            self.brightness_entity_input.setText(credentials[7])
+        else:
+            self.brightness_entity_input.clear()
+
+        if len(credentials) > 8 and credentials[8] is not None:
+            self.brightness_multiplier_slider.setValue(int(credentials[8]))
+        else:
+            self.brightness_multiplier_slider.setValue(0)
+
+        if len(credentials) > 9 and credentials[9] is not None:
+            self.transition_slider.setValue(int(credentials[9]))
+        else:
+            self.transition_slider.setValue(5)
+
+        if handle_startup:
+            if self.minimized_box.isChecked() and self.close_to_tray_box.isChecked():
+                self.hide()
+                self.tray_icon.show()
+                self._start_in_tray = True
+            elif self.minimized_box.isChecked():
+                self.showMinimized()
+                self._start_in_tray = False
+            else:
+                self._start_in_tray = False
+
+        for w, e in self.dynamic_rows:
+            w.setParent(None)
+            w.deleteLater()
+        self.dynamic_rows.clear()
+
+        for text in lamps:
+            self._create_lamp_row(text)
+
+        if not lamps:
+            self.add_dynamic_row()
+
+        self.refresh_logos()
+        self._restore_lamp_positions(lamps)
+
+    def _create_lamp_row(self, text=""):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+
+        line_edit = QLineEdit()
+        line_edit.setPlaceholderText("Your device ID...")
+        if text:
+            line_edit.setText(text)
+        line_edit.textChanged.connect(self.refresh_logos)
+        line_edit.setStyleSheet(
+            """
+            QLineEdit {
+                background-color: #403d39;
+                border-radius: 3px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #eb5e28;
+                border-radius: 3px;
+            }
+            """
+        )
+
+        plus_button = QPushButton("+")
+        plus_button.setFixedWidth(30)
+        plus_button.clicked.connect(self.add_dynamic_row)
+
+        delete_button = QPushButton("\u2013")
+        delete_button.setFixedWidth(30)
+        delete_button.clicked.connect(
+            lambda checked=False, w=row_widget, e=line_edit: self.delete_dynamic_row(w, e)
+        )
+
+        for btn in (plus_button, delete_button):
+            btn.setStyleSheet(
+                """
+                QPushButton {
+                    background-color: #403d39;
+                }
+                QPushButton:hover {
+                    border: 0.5px solid #eb5e28;
+                    border-radius: 7px;
+                    background-color: #252422;
+                }
+                """
+            )
+
+        row_layout.addWidget(line_edit)
+        row_layout.addWidget(plus_button)
+        row_layout.addWidget(delete_button)
+
+        self.dynamic_layout.addWidget(row_widget)
+        self.dynamic_rows.append((row_widget, line_edit))
+
+    def _restore_lamp_positions(self, lamps):
+        ir = self.logo_canvas.image_rect
+        for idx, entity_id in enumerate(lamps):
+            if idx >= len(self.logo_canvas.logos):
+                break
+            logo = self.logo_canvas.logos[idx]
+            saved = lamps[entity_id]
+
+            if ir is not None and ir.width() > 0 and ir.height() > 0:
+                is_relative = all(0.0 <= v <= 1.0 for v in saved)
+                if is_relative:
+                    cx = ir.left() + saved[0] * ir.width()
+                    cy = ir.top() + saved[1] * ir.height()
+                else:
+                    cx = saved[0] + logo.width() / 2.0
+                    cy = saved[1] + logo.height() / 2.0
+
+                new_x = int(cx - logo.width() / 2.0)
+                new_y = int(cy - logo.height() / 2.0)
+
+                min_x = ir.left()
+                max_x = ir.left() + ir.width() - logo.width()
+                min_y = ir.top()
+                max_y = ir.top() + ir.height() - logo.height()
+                new_x = max(min_x, min(new_x, max_x))
+                new_y = max(min_y, min(new_y, max_y))
+
+                logo.move(new_x, new_y)
+            else:
+                logo.move(int(saved[0]), int(saved[1]))
+
+            samples = self.logo_canvas.map_widget_area_to_screen(logo)
+            if samples:
+                logo.position = samples
+
+    # ── Sidebar / Profile actions ────────────────────────────────
+
+    def toggle_sidebar(self):
+        is_open = self.sidebar.maximumWidth() > 0
+        target = 0 if is_open else 250
+
+        anim = QPropertyAnimation(self.sidebar, b"maximumWidth")
+        anim.setDuration(250)
+        anim.setStartValue(self.sidebar.maximumWidth())
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.start()
+        self._sidebar_anim = anim
+
+    def switch_profile(self, name):
+        if name == self._active_profile:
+            return
+
+        profiles_data = self._load_profiles_json()
+        profiles_data["profiles"][self._active_profile] = self._gather_current_profile_data()
+
+        self._active_profile = name
+        profiles_data["active_profile"] = name
+        self._save_profiles_json(profiles_data)
+
+        if name in profiles_data["profiles"]:
+            self._apply_profile_data(profiles_data["profiles"][name])
+
+        self.setWindowTitle(f"Openhome Sync - {name}")
+        self.sidebar.set_active(name)
+
+    def create_profile(self, name):
+        profiles_data = self._load_profiles_json()
+
+        if name in profiles_data["profiles"]:
+            QMessageBox.warning(
+                self, "Profil existiert bereits",
+                f'Ein Profil mit dem Namen "{name}" existiert bereits.'
+            )
+            return
+
+        profiles_data["profiles"][self._active_profile] = self._gather_current_profile_data()
+        profiles_data["profiles"][name] = {"credentials": [], "lamps": {}}
+        profiles_data["active_profile"] = name
+        self._save_profiles_json(profiles_data)
+
+        self._active_profile = name
+        self._apply_profile_data(profiles_data["profiles"][name])
+
+        self.setWindowTitle(f"Openhome Sync - {name}")
+        self.sidebar.refresh_list(list(profiles_data["profiles"].keys()))
+        self.sidebar.set_active(name)
+
+    def delete_profile(self, name):
+        profiles_data = self._load_profiles_json()
+        if name not in profiles_data["profiles"]:
+            return
+
+        del profiles_data["profiles"][name]
+        remaining = list(profiles_data["profiles"].keys())
+
+        if name == self._active_profile:
+            self._active_profile = remaining[0] if remaining else "Default"
+            if not remaining:
+                profiles_data["profiles"]["Default"] = {"credentials": [], "lamps": {}}
+                remaining = ["Default"]
+            profiles_data["active_profile"] = self._active_profile
+            self._save_profiles_json(profiles_data)
+            self._apply_profile_data(profiles_data["profiles"][self._active_profile])
+            self.setWindowTitle(f"Openhome Sync - {self._active_profile}")
+        else:
+            self._save_profiles_json(profiles_data)
+
+        self.sidebar.refresh_list(list(profiles_data["profiles"].keys()))
+        self.sidebar.set_active(self._active_profile)
+
+    def rename_profile(self, old_name, new_name):
+        profiles_data = self._load_profiles_json()
+
+        if new_name in profiles_data["profiles"]:
+            QMessageBox.warning(
+                self, "Name vergeben",
+                f'Ein Profil mit dem Namen "{new_name}" existiert bereits.'
+            )
+            return
+
+        if old_name not in profiles_data["profiles"]:
+            return
+
+        profiles_data["profiles"][new_name] = profiles_data["profiles"].pop(old_name)
+
+        if self._active_profile == old_name:
+            self._active_profile = new_name
+            self.setWindowTitle(f"Openhome Sync - {new_name}")
+
+        profiles_data["active_profile"] = self._active_profile
+        self._save_profiles_json(profiles_data)
+
+        self.sidebar.refresh_list(list(profiles_data["profiles"].keys()))
+        self.sidebar.set_active(self._active_profile)
 
 
 if __name__ == "__main__":
