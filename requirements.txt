@@ -1,4 +1,5 @@
 pyautogui
 requests
 PyQt6
+platformdirs
 pywin32; platform_system == "Windows"
